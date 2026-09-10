@@ -1,0 +1,11 @@
+.idea/
+.gradle/
+**/build/
+local.properties
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+*.log
+

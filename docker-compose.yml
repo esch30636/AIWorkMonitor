@@ -1,0 +1,11 @@
+services:
+  relay:
+    build: .
+    environment:
+      AIWM_TOKEN: ${AIWM_TOKEN:?Set AIWM_TOKEN in .env}
+      AIWM_HOST: 0.0.0.0
+      AIWM_PORT: 8765
+    ports:
+      - "8765:8765"
+    restart: unless-stopped
+
