@@ -45,6 +45,16 @@ aiwm-agent
 
 Ubuntu 使用相同环境变量与命令。Android Studio 打开 `android/`，运行后填写中继地址（真机局域网示例：`ws://192.168.1.20:8765`）和令牌。
 
+### 跨网络连接（Tailscale）
+
+让中继电脑、各采集电脑和手机登录同一个 Tailnet。中继绑定其 Tailscale IP，其他设备使用 MagicDNS 名称连接，例如：
+
+```text
+ws://lenovo-83bf.tailaed876.ts.net:8765
+```
+
+该方式不需要公网 IP 或路由器端口映射。详细部署方式见 `docs/tailscale.md`。
+
 ## Windows EXE
 
 执行以下命令生成单文件 Windows 代理：
