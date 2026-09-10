@@ -40,5 +40,6 @@ executable = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version=str(project_root / "packaging" / "windows" / "version_info.txt"),
+    icon=str(project_root / "packaging" / "windows" / "app_icon.ico"),
     uac_admin=False,
 )
