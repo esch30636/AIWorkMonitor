@@ -59,6 +59,7 @@ aiwm-agent
 
 - CPU 占用、内存：使用 `psutil`，Windows/Ubuntu 均可用。
 - NVIDIA GPU 温度、功耗、占用、显存：使用 `nvidia-smi`。
+- Windows Intel/AMD GPU 占用和显存：使用系统 PDH 性能计数器作为回退采集器。
 - Ubuntu CPU 温度：使用内核 hwmon/`psutil`；CPU 功耗：读取 RAPL。
 - Windows CPU/GPU 温度和 CPU 功耗：若安装并运行 LibreHardwareMonitor，代理会读取其 WMI 数据；否则对应字段为 `null`，其余指标仍正常工作。
 - AMD/Intel 独显采集器保留为后续插件扩展点。
@@ -74,4 +75,3 @@ Claude Code 适配器可读取本机 Claude 会话 JSONL 的新增活动，并�
 3. 增加 AMD ROCm/ADLX 与 Intel oneAPI/PresentMon 采集器。
 4. 为 ChatGPT/Codex 接入稳定的本地事件源或官方接口。
 5. 增加 Android 后台通知、历史曲线和设备配对二维码。
-

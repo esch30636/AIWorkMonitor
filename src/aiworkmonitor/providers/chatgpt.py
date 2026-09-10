@@ -14,7 +14,7 @@ class ChatGptDesktopProvider(ActivityProvider):
         self.tail = JsonlTail(log_glob) if log_glob else None
 
     def state(self) -> dict[str, Any]:
-        processes = _processes_matching(("chatgpt", "openai.chatgpt", "codex"))
+        processes = _processes_matching(("chatgpt", "openai.chatgpt"))
         latest = self.tail.latest_file() if self.tail else None
         return {
             "name": self.name,
@@ -28,4 +28,3 @@ class ChatGptDesktopProvider(ActivityProvider):
         if not self.tail:
             return []
         return [{"provider": self.name, **event} for event in self.tail.poll()]
-

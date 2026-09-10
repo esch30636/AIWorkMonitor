@@ -3,9 +3,9 @@
 **/build/
 local.properties
 .venv/
+.android-sdk/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .env
 *.log
-

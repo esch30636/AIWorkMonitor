@@ -120,9 +120,11 @@ def main() -> None:
     settings = AgentSettings.from_env()
     if settings.token == "development-token":
         LOGGER.warning("AIWM_TOKEN is using the insecure development default")
-    asyncio.run(DesktopAgent(settings).run_forever())
+    try:
+        asyncio.run(DesktopAgent(settings).run_forever())
+    except KeyboardInterrupt:
+        LOGGER.info("Agent stopped")
 
 
 if __name__ == "__main__":
     main()
-

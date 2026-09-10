@@ -23,6 +23,7 @@ def _number(value: str | float | int | None) -> float | None:
 class SystemCollector:
     def __init__(self) -> None:
         self._rapl_sample: tuple[float, float] | None = None
+        self._windows_gpu = WindowsGpuCollector() if platform.system() == "Windows" else None
         psutil.cpu_percent(interval=None)
 
     def sample(self) -> dict[str, Any]:
@@ -38,11 +39,20 @@ class SystemCollector:
                 "totalBytes": int(memory.total),
                 "usagePercent": round(memory.percent, 2),
             },
-            "gpus": self._nvidia_gpus(),
+            "gpus": self._gpus(),
         }
         if platform.system() == "Windows":
             self._merge_libre_hardware_monitor(payload)
         return payload
+
+    def _gpus(self) -> list[dict[str, Any]]:
+        nvidia = self._nvidia_gpus()
+        if nvidia:
+            return nvidia
+        if self._windows_gpu:
+            sample = self._windows_gpu.sample()
+            return [sample] if sample else []
+        return []
 
     def _cpu_temperature(self) -> float | None:
         try:
@@ -156,3 +166,84 @@ class SystemCollector:
                 payload["cpu"]["temperatureC"] = value
             elif kind == "Power" and ("cpu package" in name or "package" == name):
                 payload["cpu"]["powerW"] = value
+
+
+class WindowsGpuCollector:
+    """Low-overhead Windows GPU fallback using persistent PDH counters."""
+
+    def __init__(self) -> None:
+        self._pdh: Any | None = None
+        self._query: Any | None = None
+        self._usage: Any | None = None
+        self._dedicated: Any | None = None
+        self._shared: Any | None = None
+        self.name = "Windows GPU"
+        self.total_bytes = 0
+        self._load_inventory()
+        try:
+            import win32pdh
+
+            self._pdh = win32pdh
+            self._query = win32pdh.OpenQuery()
+            self._usage = win32pdh.AddEnglishCounter(
+                self._query, r"\GPU Engine(*)\Utilization Percentage"
+            )
+            self._dedicated = win32pdh.AddEnglishCounter(
+                self._query, r"\GPU Adapter Memory(*)\Dedicated Usage"
+            )
+            self._shared = win32pdh.AddEnglishCounter(
+                self._query, r"\GPU Adapter Memory(*)\Shared Usage"
+            )
+            win32pdh.CollectQueryData(self._query)
+        except Exception:  # Hardware counters are optional and vary by driver.
+            self._pdh = None
+            self._query = None
+
+    def _load_inventory(self) -> None:
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if not powershell:
+            return
+        script = (
+            "Get-CimInstance Win32_VideoController | "
+            "Where-Object { $_.Name -notmatch 'MuMu Virtual' } | "
+            "Select-Object -First 1 Name,AdapterRAM | ConvertTo-Json -Compress"
+        )
+        try:
+            result = subprocess.run(
+                [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=4,
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                adapter = json.loads(result.stdout)
+                self.name = str(adapter.get("Name") or self.name)
+                self.total_bytes = int(adapter.get("AdapterRAM") or 0)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+            return
+
+    def sample(self) -> dict[str, Any] | None:
+        if not self._pdh or self._query is None:
+            return None
+        try:
+            self._pdh.CollectQueryData(self._query)
+            usage = self._pdh.GetFormattedCounterArray(self._usage, self._pdh.PDH_FMT_DOUBLE)
+            dedicated = self._pdh.GetFormattedCounterArray(self._dedicated, self._pdh.PDH_FMT_LARGE)
+            shared = self._pdh.GetFormattedCounterArray(self._shared, self._pdh.PDH_FMT_LARGE)
+        except Exception:  # Keep telemetry alive when a counter disappears.
+            return None
+        usage_percent = max((float(value) for value in usage.values()), default=0.0)
+        memory_used = max(
+            max((int(value) for value in dedicated.values()), default=0),
+            max((int(value) for value in shared.values()), default=0),
+        )
+        return {
+            "index": 0,
+            "name": self.name,
+            "temperatureC": None,
+            "powerW": None,
+            "usagePercent": round(min(usage_percent, 100.0), 2),
+            "memoryUsedBytes": memory_used,
+            "memoryTotalBytes": self.total_bytes,
+        }

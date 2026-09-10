@@ -23,14 +23,15 @@ class JsonlTail:
             return []
         size = path.stat().st_size
         if path not in self._offsets:
-            self._offsets[path] = max(size - 16_384, 0)
+            # Only stream activity produced after the agent starts. Replaying a
+            # previous conversation is surprising and can expose stale content.
+            self._offsets[path] = size
+            return []
         offset = min(self._offsets[path], size)
         events: list[dict[str, Any]] = []
         try:
             with path.open("r", encoding="utf-8", errors="replace") as handle:
                 handle.seek(offset)
-                if offset:
-                    handle.readline()
                 for line in handle:
                     parsed = self._parse(line)
                     if parsed:
@@ -65,4 +66,3 @@ class JsonlTail:
                     chunks.append(item["text"])
             return "\n".join(chunks)
         return ""
-
