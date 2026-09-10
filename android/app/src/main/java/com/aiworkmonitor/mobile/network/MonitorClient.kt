@@ -29,17 +29,27 @@ class MonitorClient(
         val request = Request.Builder().url(url).build()
         onState("正在连接")
         socket = http.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) = onState("已连接")
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (webSocket === socket) onState("已连接")
+            }
 
-            override fun onMessage(webSocket: WebSocket, text: String) = onMessage(text)
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                if (webSocket === socket) onMessage(text)
+            }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                onState("连接关闭：$reason")
+                if (webSocket === socket) {
+                    socket = null
+                    onState("连接关闭：$reason")
+                }
                 webSocket.close(code, reason)
             }
 
             override fun onFailure(webSocket: WebSocket, throwable: Throwable, response: Response?) {
-                onState("连接失败：${throwable.message ?: "未知错误"}")
+                if (webSocket === socket) {
+                    socket = null
+                    onState("连接失败：${throwable.message ?: "未知错误"}")
+                }
             }
         })
     }
@@ -57,7 +67,8 @@ class MonitorClient(
     }
 
     fun close() {
-        socket?.close(1000, "client reconnect")
+        val closingSocket = socket
         socket = null
+        closingSocket?.close(1000, "client reconnect")
     }
 }

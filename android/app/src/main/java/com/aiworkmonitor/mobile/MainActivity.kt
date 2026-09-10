@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,15 +18,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,9 +42,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aiworkmonitor.mobile.model.DeviceSnapshot
 import com.aiworkmonitor.mobile.model.GpuMetric
+import com.aiworkmonitor.mobile.storage.SavedConnection
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 private val AppColors = darkColorScheme(
@@ -60,26 +72,104 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun MonitorScreen(model: MainViewModel = viewModel()) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = true,
+        drawerContent = {
+            SavedConnectionsDrawer(
+                connections = model.savedConnections,
+                activeConnectionId = model.activeConnectionId,
+                onConnectionSelected = { connection ->
+                    model.connectSaved(connection)
+                    scope.launch { drawerState.close() }
+                },
+                onClose = { scope.launch { drawerState.close() } },
+            )
+        },
     ) {
-        item {
-            Spacer(Modifier.height(12.dp))
-            Text("AI Work Monitor", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("电脑工作状态与硬件遥测", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        item { ConnectionCard(model) }
-        if (model.devices.isEmpty()) {
-            item {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                    Text("尚无设备。启动电脑代理后会自动出现在这里。", modifier = Modifier.padding(20.dp))
+        Column(Modifier.fillMaxSize()) {
+            AppHeader(onOpenDrawer = { scope.launch { drawerState.open() } })
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item { ConnectionCard(model) }
+                if (model.devices.isEmpty()) {
+                    item {
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                            Text("尚无设备。启动电脑代理后会自动出现在这里。", modifier = Modifier.padding(20.dp))
+                        }
+                    }
+                } else {
+                    items(model.devices, key = { it.deviceId }) { device -> DeviceCard(device, model) }
                 }
+                item { Spacer(Modifier.height(24.dp)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppHeader(onOpenDrawer: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onOpenDrawer) {
+            Text("☰", fontSize = 26.sp)
+        }
+        Column {
+            Text("AI Work Monitor", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("电脑工作状态与硬件遥测", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun SavedConnectionsDrawer(
+    connections: List<SavedConnection>,
+    activeConnectionId: String?,
+    onConnectionSelected: (SavedConnection) -> Unit,
+    onClose: () -> Unit,
+) {
+    ModalDrawerSheet {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text("已保存的连接", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("点击设备即可自动连接", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = onClose) { Text("×", fontSize = 28.sp) }
+        }
+        HorizontalDivider()
+        if (connections.isEmpty()) {
+            Box(Modifier.fillMaxWidth().padding(24.dp)) {
+                Text("暂无历史连接。首次连接成功后会自动保存。", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else {
-            items(model.devices, key = { it.deviceId }) { device -> DeviceCard(device, model) }
+            LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                items(connections, key = { it.id }) { connection ->
+                    NavigationDrawerItem(
+                        label = {
+                            Column(Modifier.padding(vertical = 4.dp)) {
+                                Text(connection.name, fontWeight = FontWeight.SemiBold)
+                                Text(connection.relayUrl, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                                Text("令牌已加密保存", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        },
+                        selected = connection.id == activeConnectionId,
+                        onClick = { onConnectionSelected(connection) },
+                        modifier = Modifier.padding(vertical = 3.dp),
+                    )
+                }
+            }
         }
-        item { Spacer(Modifier.height(24.dp)) }
     }
 }
 
@@ -87,6 +177,14 @@ private fun MonitorScreen(model: MainViewModel = viewModel()) {
 private fun ConnectionCard(model: MainViewModel) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedTextField(
+                value = model.connectionName,
+                onValueChange = { model.connectionName = it },
+                label = { Text("设备名称（可选）") },
+                supportingText = { Text("留空时使用地址中的主机名") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
             OutlinedTextField(
                 value = model.relayUrl,
                 onValueChange = { model.relayUrl = it },
@@ -110,6 +208,11 @@ private fun ConnectionCard(model: MainViewModel) {
                 Text(model.connectionState, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Button(onClick = model::connect) { Text("连接") }
             }
+            Text(
+                "连接成功后，名称、地址和令牌会保存在本机；令牌使用 Android Keystore 加密。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
