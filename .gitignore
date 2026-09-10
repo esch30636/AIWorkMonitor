@@ -1,6 +1,7 @@
 .idea/
 .gradle/
 **/build/
+dist/
 local.properties
 .venv/
 .android-sdk/

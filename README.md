@@ -45,6 +45,20 @@ aiwm-agent
 
 Ubuntu 使用相同环境变量与命令。Android Studio 打开 `android/`，运行后填写中继地址（真机局域网示例：`ws://192.168.1.20:8765`）和令牌。
 
+## Windows EXE
+
+执行以下命令生成单文件 Windows 代理：
+
+```powershell
+.\scripts\build-windows.ps1
+```
+
+产物位于 `dist/AIWorkMonitorAgent.exe`。把 `packaging/windows/aiworkmonitor.env.example` 复制为与 EXE 同目录的 `aiworkmonitor.env`，填写中继地址、令牌和设备名后即可双击运行。先执行以下命令可在不连接中继的情况下检查配置和硬件采集：
+
+```powershell
+.\dist\AIWorkMonitorAgent.exe --check
+```
+
 若要启用手机向 Claude Code 下发指令，需要在电脑代理上显式设置：
 
 ```powershell

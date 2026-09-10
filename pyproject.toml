@@ -23,10 +23,11 @@ dev = [
   "pytest>=8.3,<10",
   "pytest-asyncio>=0.25,<2",
 ]
+windows-build = ["pyinstaller>=6.11,<7"]
 
 [project.scripts]
 aiwm-relay = "aiworkmonitor.relay:main"
-aiwm-agent = "aiworkmonitor.agent:main"
+aiwm-agent = "aiworkmonitor.windows_agent:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aiworkmonitor"]
