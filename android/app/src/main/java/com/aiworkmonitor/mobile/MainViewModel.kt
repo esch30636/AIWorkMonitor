@@ -89,10 +89,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         connect()
     }
 
-    fun sendCommand(deviceId: String, command: String) {
+    fun sendCommand(
+        deviceId: String,
+        command: String,
+        sessionId: String?,
+        model: String,
+        effort: String,
+    ) {
         if (command.isBlank()) return
-        val sent = client.sendClaudeCommand(deviceId, command.trim(), UUID.randomUUID().toString())
-        commandStatus = if (sent) "指令已发送" else "发送失败：当前未连接"
+        val sent = client.sendClaudeCommand(
+            deviceId = deviceId,
+            action = "prompt",
+            command = command.trim(),
+            requestId = UUID.randomUUID().toString(),
+            sessionId = sessionId,
+            model = model,
+            effort = effort,
+        )
+        commandStatus = if (sent) "指令已发送到所选会话" else "发送失败：当前未连接"
+    }
+
+    fun compactSession(
+        deviceId: String,
+        instructions: String,
+        sessionId: String?,
+        model: String,
+        effort: String,
+    ) {
+        val sent = client.sendClaudeCommand(
+            deviceId = deviceId,
+            action = "compact",
+            command = instructions.trim(),
+            requestId = UUID.randomUUID().toString(),
+            sessionId = sessionId,
+            model = model,
+            effort = effort,
+        )
+        commandStatus = if (sent) "已发送 /compact" else "发送失败：当前未连接"
     }
 
     override fun onCleared() {

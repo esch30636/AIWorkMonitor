@@ -101,7 +101,7 @@ class ConnectionRegistry:
 def create_app(settings: RelaySettings | None = None) -> FastAPI:
     config = settings or RelaySettings.from_env()
     registry = ConnectionRegistry()
-    app = FastAPI(title="AIWorkMonitor Relay", version="0.1.0")
+    app = FastAPI(title="AIWorkMonitor Relay", version="0.2.0")
     app.state.settings = config
     app.state.registry = registry
 
@@ -187,4 +187,3 @@ def main() -> None:
     if settings.token == "development-token":
         LOGGER.warning("AIWM_TOKEN is using the insecure development default")
     uvicorn.run("aiworkmonitor.relay:app", host=settings.host, port=settings.port, reload=False)
-

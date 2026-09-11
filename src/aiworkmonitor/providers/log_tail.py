@@ -21,6 +21,17 @@ class JsonlTail:
         path = self.latest_file()
         if path is None:
             return []
+        return self.poll_paths([path])
+
+    def poll_paths(self, paths: list[Path]) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for path in paths:
+            events.extend(self._poll_path(path))
+        return events[-20:]
+
+    def _poll_path(self, path: Path) -> list[dict[str, Any]]:
+        if not path.is_file():
+            return []
         size = path.stat().st_size
         if path not in self._offsets:
             # Only stream activity produced after the agent starts. Replaying a
@@ -30,21 +41,22 @@ class JsonlTail:
         offset = min(self._offsets[path], size)
         events: list[dict[str, Any]] = []
         try:
-            with path.open("r", encoding="utf-8", errors="replace") as handle:
+            with path.open("rb") as handle:
                 handle.seek(offset)
                 for line in handle:
                     parsed = self._parse(line)
                     if parsed:
+                        parsed["sourceFile"] = str(path)
                         events.append(parsed)
                 self._offsets[path] = handle.tell()
         except OSError:
             return []
         return events[-20:]
 
-    def _parse(self, line: str) -> dict[str, Any] | None:
+    def _parse(self, line: str | bytes) -> dict[str, Any] | None:
         try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
+            value = json.loads(decode_log_line(line))
+        except (UnicodeDecodeError, json.JSONDecodeError):
             return None
         event_type = str(value.get("type", "event"))
         message = value.get("message", value)
@@ -53,7 +65,7 @@ class JsonlTail:
         text = self._content_text(content)
         if not text:
             return None
-        return {"kind": event_type, "role": role, "text": text[: self.max_text], "sourceFile": str(self.latest_file())}
+        return {"kind": event_type, "role": role, "text": text[: self.max_text]}
 
     @staticmethod
     def _content_text(content: Any) -> str:
@@ -66,3 +78,15 @@ class JsonlTail:
                     chunks.append(item["text"])
             return "\n".join(chunks)
         return ""
+
+
+def decode_log_line(line: str | bytes) -> str:
+    if isinstance(line, str):
+        return line
+    try:
+        return line.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # Some Claude Code builds on Chinese Windows write individual JSONL
+        # records with the active GBK code page. Decode each record separately
+        # because a session file can contain lines from different CLI versions.
+        return line.decode("gb18030")

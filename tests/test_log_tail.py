@@ -15,3 +15,19 @@ def test_jsonl_tail_does_not_replay_existing_conversation(tmp_path) -> None:
 
     events = tail.poll()
     assert [event["text"] for event in events] == ["new"]
+
+
+def test_jsonl_tail_decodes_gbk_records_on_windows(tmp_path) -> None:
+    log = tmp_path / "session.jsonl"
+    log.write_bytes(b"")
+    tail = JsonlTail(str(log))
+    assert tail.poll() == []
+
+    record = json.dumps(
+        {"type": "assistant", "message": {"role": "assistant", "content": "目录文件选择"}},
+        ensure_ascii=False,
+    )
+    with log.open("ab") as handle:
+        handle.write(record.encode("gb18030") + b"\n")
+
+    assert tail.poll()[0]["text"] == "目录文件选择"

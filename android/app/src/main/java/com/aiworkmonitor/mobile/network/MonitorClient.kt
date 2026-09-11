@@ -54,11 +54,23 @@ class MonitorClient(
         })
     }
 
-    fun sendClaudeCommand(deviceId: String, command: String, requestId: String): Boolean {
+    fun sendClaudeCommand(
+        deviceId: String,
+        action: String,
+        command: String,
+        requestId: String,
+        sessionId: String?,
+        model: String,
+        effort: String,
+    ): Boolean {
         val payload = JSONObject()
             .put("target", "claude-code")
+            .put("action", action)
             .put("command", command)
             .put("requestId", requestId)
+            .put("model", model)
+            .put("effort", effort)
+        if (!sessionId.isNullOrBlank()) payload.put("sessionId", sessionId)
         val message = JSONObject()
             .put("type", "command")
             .put("deviceId", deviceId)

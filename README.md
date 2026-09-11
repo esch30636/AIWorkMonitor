@@ -6,7 +6,7 @@
 
 - `relay/`：FastAPI WebSocket 中继，管理电脑代理、手机连接、最新状态和指令转发。
 - `agent/`：Windows/Ubuntu Python 代理，采集 CPU、内存、NVIDIA GPU、显存、温度和功耗，并提供 Claude Code / ChatGPT 状态适配器。
-- `android/`：Jetpack Compose 客户端，支持连接配置、设备列表、实时指标、活动流与 Claude Code 指令输入。
+- `android/`：Jetpack Compose 客户端，支持连接配置、设备列表、实时指标、活动流，以及 Claude Code 会话、模型、思考强度、指令和 `/compact` 控制。
 - `docs/protocol.md`：手机、中继、电脑代理之间的消息协议。
 
 ## 数据流
@@ -89,14 +89,14 @@ ws://lenovo-83bf.tailaed876.ts.net:8765
 .\dist\AIWorkMonitorAgent.exe --background
 ```
 
-Agent 会自动从 `~/.claude/projects/**/*.jsonl` 识别最近活跃的 Claude Code 会话、项目路径和 session ID，不需要在电脑端配置工作目录。Windows 首次配置默认允许手机向 Claude Code 下发指令，也可在高级设置中关闭；Ubuntu 代理需要显式设置：
+Agent 会联合读取 `~/.claude/sessions/*.json`、`~/.claude/history.jsonl` 与 `~/.claude/projects/**/*.jsonl`：运行时登记表用于把每个 Claude 进程精确绑定到当前 session ID，历史记录用于取得项目根目录和最近提示，项目日志用于活动流和模型信息。因此不需要在电脑端配置工作目录，并且多个项目同时运行、终端内执行过 `/resume`、会话进入子目录等情况不会再依赖“全局最新日志”猜测。Windows 首次配置默认允许手机向 Claude Code 下发指令，也可在高级设置中关闭；Ubuntu 代理需要显式设置：
 
 ```powershell
 $env:AIWM_ALLOW_CLAUDE_COMMANDS = "true"
 aiwm-agent
 ```
 
-手机下发指令时，代理会在自动发现的项目目录中通过 `claude -p --resume <session-id>` 继续最近活跃的会话，不会经过 shell。请仅通过 Tailscale 或其他受控网络使用该功能。
+手机端会把所有正在运行的 Claude Code 会话置顶，并列出最近 50 个本机会话。每项显示项目根目录名、对话标题或最近提示、session ID 前缀和运行状态；详情区另外显示当前工作子目录。用户选择会话后，普通指令和 `/compact` 都会通过 `claude -p --resume <session-id>` 从正确的项目根目录作用于该会话，并可保持会话当前模型、选择 Claude Code 模型别名或输入企业网关自定义模型 ID，同时支持 `low` 至 `max` 和 `ultracode` 思考强度。Fable 和部分 1M 上下文选项可能使用额外额度，具体取决于 Anthropic 账户。调用不会经过 shell。请仅通过 Tailscale 或其他受控网络使用该功能。
 
 ## 硬件数据说明
 
@@ -109,12 +109,12 @@ aiwm-agent
 
 ## ChatGPT 与 Claude Code 的边界
 
-Claude Code 适配器会自动跟随最近写入的本机会话 JSONL，把当前项目、会话状态和新增活动推送到手机，并通过独立的 `claude -p --resume` 调用执行手机指令。ChatGPT 桌面应用目前没有稳定公开的“实时任务流”接口，因此骨架默认提供进程在线状态与可配置日志文件尾读；更深层集成放在 `ActivityProvider` 适配器边界内，不依赖 UI 抓取。
+Claude Code 适配器会跟随每个运行进程登记的会话 JSONL，把准确的会话列表、项目根目录、当前工作目录、状态和新增活动推送到手机，并通过独立的 `claude -p --resume` 调用执行手机指令、模型/思考强度选择和上下文压缩。ChatGPT 桌面应用目前没有稳定公开的“实时任务流”接口，因此骨架默认提供进程在线状态与可配置日志文件尾读；更深层集成放在 `ActivityProvider` 适配器边界内，不依赖 UI 抓取。
 
 ## 下一阶段建议
 
 1. 为中继加入设备注册、短期令牌和 TLS/WSS。
-2. 在手机端展示 Claude 指令的流式 token，并支持主动选择多个同时活跃的会话。
+2. 在手机端展示 Claude 指令的流式 token，并显示每个会话的上下文用量。
 3. 增加 AMD ROCm/ADLX 与 Intel oneAPI/PresentMon 采集器。
 4. 为 ChatGPT/Codex 接入稳定的本地事件源或官方接口。
 5. 增加 Android 后台通知、历史曲线和设备配对二维码。

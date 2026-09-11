@@ -109,7 +109,13 @@ class DesktopAgent:
             if event.type != "command":
                 continue
             command = CommandPayload.model_validate(event.payload)
-            result = await self.command_runner.execute(command.command)
+            result = await self.command_runner.execute(
+                command.command,
+                action=command.action,
+                session_id=command.sessionId,
+                model=command.model,
+                effort=command.effort,
+            )
             result["requestId"] = command.requestId
             result["target"] = command.target
             await send(Envelope(type="command_result", deviceId=self.settings.device_id, payload=result))

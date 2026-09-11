@@ -28,14 +28,33 @@ data class ProviderState(
     val running: Boolean,
     val mode: String? = null,
     val activeSession: ClaudeSessionState? = null,
+    val activeSessions: List<ClaudeSessionState> = emptyList(),
+    val sessions: List<ClaudeSessionState> = emptyList(),
 )
 
 data class ClaudeSessionState(
     val sessionId: String,
     val projectName: String,
     val projectPath: String,
+    val workingDirectory: String? = null,
     val lastActivityAt: String,
     val active: Boolean,
+    val displayName: String? = null,
+    val model: String? = null,
+    val gitBranch: String? = null,
+    val lastPrompt: String? = null,
+    val processId: Int? = null,
+    val status: String? = null,
+)
+
+data class ClaudeCommandResult(
+    val requestId: String,
+    val ok: Boolean,
+    val output: String,
+    val action: String = "prompt",
+    val sessionId: String? = null,
+    val model: String? = null,
+    val effort: String? = null,
 )
 
 data class ActivityItem(
@@ -57,7 +76,7 @@ data class DeviceSnapshot(
     val gpus: List<GpuMetric>,
     val providers: List<ProviderState>,
     val activity: List<ActivityItem>,
-    val lastCommandResult: String?,
+    val lastCommandResult: ClaudeCommandResult?,
 )
 
 private fun JSONObject.optionalDouble(name: String): Double? =
@@ -99,14 +118,18 @@ fun parseSnapshot(message: String): List<DeviceSnapshot> {
                     while (keys.hasNext()) {
                         val key = keys.next()
                         val provider = providers.getJSONObject(key)
-                        val activeSession = provider.optJSONObject("activeSession")?.let { session ->
-                            ClaudeSessionState(
-                                sessionId = session.optString("sessionId"),
-                                projectName = session.optString("projectName"),
-                                projectPath = session.optString("projectPath"),
-                                lastActivityAt = session.optString("lastActivityAt"),
-                                active = session.optBoolean("active"),
-                            )
+                        val activeSession = provider.optJSONObject("activeSession")?.toClaudeSession()
+                        val activeSessions = buildList {
+                            val activeArray = provider.optJSONArray("activeSessions")
+                            if (activeArray != null) for (sessionIndex in 0 until activeArray.length()) {
+                                add(activeArray.getJSONObject(sessionIndex).toClaudeSession())
+                            }
+                        }
+                        val sessions = buildList {
+                            val sessionArray = provider.optJSONArray("sessions")
+                            if (sessionArray != null) for (sessionIndex in 0 until sessionArray.length()) {
+                                add(sessionArray.getJSONObject(sessionIndex).toClaudeSession())
+                            }
                         }
                         add(
                             ProviderState(
@@ -114,6 +137,8 @@ fun parseSnapshot(message: String): List<DeviceSnapshot> {
                                 running = provider.optBoolean("running"),
                                 mode = provider.optString("mode").ifBlank { null },
                                 activeSession = activeSession,
+                                activeSessions = activeSessions,
+                                sessions = sessions,
                             ),
                         )
                     }
@@ -129,9 +154,9 @@ fun parseSnapshot(message: String): List<DeviceSnapshot> {
                         add(
                             ActivityItem(
                                 provider = event.optString("provider", "unknown"),
-                                role = event.optString("role").ifBlank { null },
+                                role = event.optionalString("role"),
                                 text = event.optString("text"),
-                                projectName = event.optString("projectName").ifBlank { null },
+                                projectName = event.optionalString("projectName"),
                             ),
                         )
                     }
@@ -140,7 +165,16 @@ fun parseSnapshot(message: String): List<DeviceSnapshot> {
 
             val results = item.optJSONArray("commandResults")
             val lastResult = if (results != null && results.length() > 0) {
-                results.getJSONObject(results.length() - 1).optString("output").ifBlank { null }
+                val result = results.getJSONObject(results.length() - 1)
+                ClaudeCommandResult(
+                    requestId = result.optString("requestId"),
+                    ok = result.optBoolean("ok"),
+                    output = result.optString("output"),
+                    action = result.optString("action", "prompt"),
+                    sessionId = result.optString("sessionId").ifBlank { null },
+                    model = result.optString("model").ifBlank { null },
+                    effort = result.optString("effort").ifBlank { null },
+                )
             } else null
 
             add(
@@ -169,4 +203,24 @@ fun parseSnapshot(message: String): List<DeviceSnapshot> {
             )
         }
     }
+}
+
+private fun JSONObject.toClaudeSession(): ClaudeSessionState = ClaudeSessionState(
+    sessionId = optString("sessionId"),
+    projectName = optString("projectName"),
+    projectPath = optString("projectPath"),
+    workingDirectory = optionalString("workingDirectory"),
+    lastActivityAt = optString("lastActivityAt"),
+    active = optBoolean("active"),
+    displayName = optionalString("displayName") ?: optionalString("slug"),
+    model = optionalString("model"),
+    gitBranch = optionalString("gitBranch"),
+    lastPrompt = optionalString("lastPrompt"),
+    processId = if (has("processId") && !isNull("processId")) optInt("processId") else null,
+    status = optionalString("status"),
+)
+
+private fun JSONObject.optionalString(name: String): String? {
+    if (!has(name) || isNull(name)) return null
+    return optString(name).trim().takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
 }

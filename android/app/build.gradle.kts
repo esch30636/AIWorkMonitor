@@ -12,8 +12,8 @@ android {
         applicationId = "com.aiworkmonitor.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.4.1"
+        versionCode = 10
+        versionName = "0.6.0"
     }
 
     buildTypes {
