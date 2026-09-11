@@ -25,5 +25,5 @@ def test_windows_telemetry_helpers_never_open_a_console(monkeypatch) -> None:
 
     system._run_hidden(["powershell", "-NoProfile"], capture_output=True, text=True)
 
-    assert captured["creationflags"] == subprocess.CREATE_NO_WINDOW
+    assert captured["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
     assert captured["command"] == ["powershell", "-NoProfile"]
