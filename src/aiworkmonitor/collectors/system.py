@@ -11,6 +11,13 @@ from typing import Any
 import psutil
 
 
+def _run_hidden(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Run a telemetry helper without flashing a console window on Windows."""
+    if platform.system() == "Windows":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.run(command, **kwargs)
+
+
 def _number(value: str | float | int | None) -> float | None:
     if value is None:
         return None
@@ -105,7 +112,7 @@ class SystemCollector:
             "memory.total",
         ]
         try:
-            result = subprocess.run(
+            result = _run_hidden(
                 [executable, f"--query-gpu={','.join(fields)}", "--format=csv,noheader,nounits"],
                 capture_output=True,
                 text=True,
@@ -142,7 +149,7 @@ class SystemCollector:
             "Select-Object Name,SensorType,Value | ConvertTo-Json -Compress"
         )
         try:
-            result = subprocess.run(
+            result = _run_hidden(
                 [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
                 capture_output=True,
                 text=True,
@@ -209,7 +216,7 @@ class WindowsGpuCollector:
             "Select-Object -First 1 Name,AdapterRAM | ConvertTo-Json -Compress"
         )
         try:
-            result = subprocess.run(
+            result = _run_hidden(
                 [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
                 capture_output=True,
                 text=True,
