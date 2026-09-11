@@ -63,10 +63,27 @@ ws://lenovo-83bf.tailaed876.ts.net:8765
 .\scripts\build-windows.ps1
 ```
 
-产物位于 `dist/AIWorkMonitorAgent.exe`。把 `packaging/windows/aiworkmonitor.env.example` 复制为与 EXE 同目录的 `aiworkmonitor.env`，填写中继地址、令牌和设备名后即可双击运行。先执行以下命令可在不连接中继的情况下检查配置和硬件采集：
+产物位于 `dist/AIWorkMonitorAgent.exe`。双击后打开 Windows 图形化控制台，可填写中继地址、访问令牌、设备名和 Claude 工作目录，并可直接启动/停止 Agent、查看连接日志和检测本机硬件。
+
+控制台的“安装与开机启动”区域支持：
+
+- 浏览并选择任意可写安装目录；
+- 将当前单文件 EXE 和配置复制到所选目录；
+- 使用当前 Windows 账户设置开机静默启动，无需管理员权限；
+- 后续重新选择目录或关闭开机启动。
+
+访问令牌优先使用 Windows DPAPI 加密后写入 `aiworkmonitor.env`，只能由保存令牌的 Windows 账户解密。开机启动使用 `--background` 参数，日志写入安装目录的 `logs/agent.log`。
+
+仍可使用以下命令在不连接中继的情况下检查配置和硬件采集：
 
 ```powershell
 .\dist\AIWorkMonitorAgent.exe --check
+```
+
+需要手动静默运行时：
+
+```powershell
+.\dist\AIWorkMonitorAgent.exe --background
 ```
 
 若要启用手机向 Claude Code 下发指令，需要在电脑代理上显式设置：
