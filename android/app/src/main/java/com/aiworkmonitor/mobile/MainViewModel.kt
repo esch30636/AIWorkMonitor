@@ -29,6 +29,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var activeConnectionId by mutableStateOf<String?>(null)
         private set
+    var hasAttemptedConnection by mutableStateOf(false)
+        private set
 
     private val connectionStore = ConnectionStore(application)
     private var pendingConnection: PendingConnection? = null
@@ -65,6 +67,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     fun connect() {
+        hasAttemptedConnection = true
         if (relayUrl.isBlank() || token.isBlank()) {
             connectionState = "请填写中继地址和令牌"
             return
@@ -76,6 +79,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { client.connect(relayUrl, token) }
             .onFailure { connectionState = "地址无效：${it.message}" }
     }
+
+    fun connectionActionLabel(): String = if (hasAttemptedConnection) "重新连接" else "连接"
 
     fun connectSaved(connection: SavedConnection) {
         connectionName = connection.name

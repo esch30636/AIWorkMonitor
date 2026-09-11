@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from aiworkmonitor.collectors.system import SystemCollector
 from aiworkmonitor.config import AgentSettings
 from aiworkmonitor.providers.chatgpt import ChatGptDesktopProvider
 from aiworkmonitor.providers.claude import ClaudeCodeProvider
-from aiworkmonitor.windows_runtime import executable_directory, load_config_file
+from aiworkmonitor.windows_runtime import ensure_agent_config, executable_directory, load_config_file
 
 
 LOGGER = logging.getLogger("aiworkmonitor.windows_agent")
@@ -34,7 +35,7 @@ def check_payload(settings: AgentSettings) -> dict[str, Any]:
             "deviceName": settings.device_name,
             "sampleInterval": settings.sample_interval,
             "claudeCommands": settings.allow_claude_commands,
-            "claudeWorkdir": str(settings.claude_workdir),
+            "claudeSessionDiscovery": "automatic",
             "tokenConfigured": settings.token != "development-token",
         },
         "telemetry": collector.sample(),
@@ -62,7 +63,13 @@ def main() -> None:
         return
 
     try:
-        loaded = load_config_file(config_path, required=args.config is not None)
+        if os.name == "nt" and args.background:
+            values = ensure_agent_config(config_path)
+            for key, value in values.items():
+                os.environ[key] = value
+            loaded = True
+        else:
+            loaded = load_config_file(config_path, required=args.config is not None)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"Configuration error: {exc}") from exc
     settings = AgentSettings.from_env()
@@ -98,10 +105,27 @@ def main() -> None:
 
     import asyncio
 
-    try:
-        asyncio.run(DesktopAgent(settings).run_forever())
-    except KeyboardInterrupt:
-        LOGGER.info("Agent stopped")
+    if os.name == "nt" and args.background:
+        from aiworkmonitor.windows_service import acquire_background_mutex, run_local_service
+
+        if not acquire_background_mutex():
+            LOGGER.info("AIWorkMonitor background service is already running")
+            return
+        port = int(os.getenv("AIWM_PORT", "8765"))
+        while True:
+            try:
+                asyncio.run(run_local_service(settings, port))
+            except KeyboardInterrupt:
+                LOGGER.info("AIWorkMonitor background service stopped")
+                return
+            except Exception:
+                LOGGER.exception("Background service failed; restarting in 5 seconds")
+                time.sleep(5)
+    else:
+        try:
+            asyncio.run(DesktopAgent(settings).run_forever())
+        except KeyboardInterrupt:
+            LOGGER.info("Agent stopped")
 
 
 if __name__ == "__main__":

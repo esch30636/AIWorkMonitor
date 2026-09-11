@@ -28,7 +28,7 @@ class DesktopAgent:
             ClaudeCodeProvider(settings.claude_log_glob),
             ChatGptDesktopProvider(settings.chatgpt_log_glob),
         ]
-        self.command_runner = ClaudeCommandRunner(settings.allow_claude_commands, settings.claude_workdir)
+        self.command_runner = ClaudeCommandRunner(settings.allow_claude_commands, settings.claude_log_glob)
 
     @property
     def websocket_url(self) -> str:

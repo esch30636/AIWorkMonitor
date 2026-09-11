@@ -4,7 +4,11 @@ from PyInstaller.utils.hooks import collect_submodules
 
 
 project_root = Path(SPECPATH).parents[1]
-hidden_imports = collect_submodules("websockets") + ["win32pdh", "pywintypes", "pythoncom"]
+hidden_imports = collect_submodules("websockets") + collect_submodules("uvicorn") + [
+    "win32pdh",
+    "pywintypes",
+    "pythoncom",
+]
 icon_path = project_root / "packaging" / "windows" / "app_icon.ico"
 
 analysis = Analysis(
@@ -16,7 +20,7 @@ analysis = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["fastapi", "uvicorn", "pytest", "httpx"],
+    excludes=["pytest", "httpx"],
     noarchive=False,
     optimize=1,
 )

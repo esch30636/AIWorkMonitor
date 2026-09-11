@@ -42,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -201,13 +202,22 @@ private fun ConnectionCard(model: MainViewModel) {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Row(
+            Button(
+                onClick = model::connect,
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+            ) { Text(model.connectionActionLabel()) }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color(0xFF232A36),
+                shape = RoundedCornerShape(10.dp),
             ) {
-                Text(model.connectionState, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Button(onClick = model::connect) { Text("连接") }
+                Text(
+                    model.connectionState,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
             Text(
                 "连接成功后，名称、地址和令牌会保存在本机；令牌使用 Android Keystore 加密。",
@@ -241,15 +251,40 @@ private fun DeviceCard(device: DeviceSnapshot, model: MainViewModel) {
             device.gpus.forEach { GpuRow(it) }
 
             val providerText = device.providers.joinToString(" · ") {
-                "${it.name} ${if (it.running) "运行中" else "未运行"}"
+                val project = it.activeSession?.projectName?.takeIf { name -> name.isNotBlank() }
+                "${it.name} ${if (it.running) "运行中" else "未运行"}${project?.let { name -> " · $name" } ?: ""}"
             }.ifBlank { "等待应用状态" }
             Text(providerText, style = MaterialTheme.typography.bodyMedium)
+
+            val activeClaude = device.providers.firstOrNull { it.name == "claude-code" }?.activeSession
+            activeClaude?.let { session ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF232A36),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            if (session.active) "正在监听 Claude Code" else "最近的 Claude Code 会话",
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(session.projectName, color = MaterialTheme.colorScheme.primary)
+                        Text(
+                            session.projectPath,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
 
             if (device.activity.isNotEmpty()) {
                 Text("最近活动", fontWeight = FontWeight.SemiBold)
                 device.activity.takeLast(4).forEach { event ->
                     Text(
-                        "${event.provider}${event.role?.let { " · $it" } ?: ""}: ${event.text}",
+                        "${event.provider}${event.projectName?.let { " · $it" } ?: ""}${event.role?.let { " · $it" } ?: ""}: ${event.text}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 3,
@@ -261,7 +296,7 @@ private fun DeviceCard(device: DeviceSnapshot, model: MainViewModel) {
                 OutlinedTextField(
                     value = command,
                     onValueChange = { command = it },
-                    label = { Text("发送给 Claude Code") },
+                    label = { Text("发送到 ${activeClaude?.projectName ?: "最近活跃的 Claude Code"}") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
                 )

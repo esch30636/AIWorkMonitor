@@ -63,14 +63,17 @@ ws://lenovo-83bf.tailaed876.ts.net:8765
 .\scripts\build-windows.ps1
 ```
 
-产物位于 `dist/AIWorkMonitorAgent.exe`。双击后打开 Windows 图形化控制台，可填写中继地址、访问令牌、设备名和 Claude 工作目录，并可直接启动/停止 Agent、查看连接日志和检测本机硬件。
+产物位于 `dist/AIWorkMonitorAgent.exe`。首次运行会为这台电脑生成永久访问令牌；安装后 EXE 会同时托管本机中继和 Agent，并自动设置当前 Windows 用户开机后台运行。关闭图形界面不会停止监控。
+
+再次打开应用时，首页只显示 Android 端需要填写的三项内容：自动读取的电脑名称、优先使用 Tailscale IP 的 WebSocket 地址和永久访问令牌。令牌不可在界面中修改，更新安装时也会沿用目标电脑已有的令牌。
 
 控制台的“安装与开机启动”区域支持：
 
 - 浏览并选择任意可写安装目录；
 - 将当前单文件 EXE 和配置复制到所选目录；
-- 使用当前 Windows 账户设置开机静默启动，无需管理员权限；
-- 后续重新选择目录或关闭开机启动。
+- 强制使用当前 Windows 账户开机静默启动，无需管理员权限；
+- 后台进程同时运行中继和本机 Agent，异常后自动重试；
+- 高级设置默认收起，仅保留安装目录和采样间隔等低频选项。
 
 访问令牌优先使用 Windows DPAPI 加密后写入 `aiworkmonitor.env`，只能由保存令牌的 Windows 账户解密。开机启动使用 `--background` 参数，日志写入安装目录的 `logs/agent.log`。
 
@@ -86,15 +89,14 @@ ws://lenovo-83bf.tailaed876.ts.net:8765
 .\dist\AIWorkMonitorAgent.exe --background
 ```
 
-若要启用手机向 Claude Code 下发指令，需要在电脑代理上显式设置：
+Agent 会自动从 `~/.claude/projects/**/*.jsonl` 识别最近活跃的 Claude Code 会话、项目路径和 session ID，不需要在电脑端配置工作目录。Windows 首次配置默认允许手机向 Claude Code 下发指令，也可在高级设置中关闭；Ubuntu 代理需要显式设置：
 
 ```powershell
 $env:AIWM_ALLOW_CLAUDE_COMMANDS = "true"
-$env:AIWM_CLAUDE_WORKDIR = "D:\\your-project"
 aiwm-agent
 ```
 
-代理会以参数数组直接启动 `claude -p`，不会经过 shell。默认禁用远程指令，避免误把未加固的开发中继暴露后直接获得代码执行入口。
+手机下发指令时，代理会在自动发现的项目目录中通过 `claude -p --resume <session-id>` 继续最近活跃的会话，不会经过 shell。请仅通过 Tailscale 或其他受控网络使用该功能。
 
 ## 硬件数据说明
 
@@ -107,12 +109,12 @@ aiwm-agent
 
 ## ChatGPT 与 Claude Code 的边界
 
-Claude Code 适配器可读取本机 Claude 会话 JSONL 的新增活动，并通过独立的 `claude -p` 调用执行手机指令。ChatGPT 桌面应用目前没有稳定公开的“实时任务流”接口，因此骨架默认提供进程在线状态与可配置日志文件尾读；更深层集成放在 `ActivityProvider` 适配器边界内，不依赖 UI 抓取。
+Claude Code 适配器会自动跟随最近写入的本机会话 JSONL，把当前项目、会话状态和新增活动推送到手机，并通过独立的 `claude -p --resume` 调用执行手机指令。ChatGPT 桌面应用目前没有稳定公开的“实时任务流”接口，因此骨架默认提供进程在线状态与可配置日志文件尾读；更深层集成放在 `ActivityProvider` 适配器边界内，不依赖 UI 抓取。
 
 ## 下一阶段建议
 
 1. 为中继加入设备注册、短期令牌和 TLS/WSS。
-2. 将 Claude 命令通道升级为可恢复 session，并在手机端展示流式 token。
+2. 在手机端展示 Claude 指令的流式 token，并支持主动选择多个同时活跃的会话。
 3. 增加 AMD ROCm/ADLX 与 Intel oneAPI/PresentMon 采集器。
 4. 为 ChatGPT/Codex 接入稳定的本地事件源或官方接口。
 5. 增加 Android 后台通知、历史曲线和设备配对二维码。

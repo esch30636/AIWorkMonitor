@@ -1,31 +1,37 @@
 from __future__ import annotations
 
-import asyncio
 import ctypes
 import json
-import logging
 import os
 import queue
 import socket
 import sys
 import threading
 import tkinter as tk
+import urllib.request
 from contextlib import suppress
 from pathlib import Path
 from tkinter import filedialog, messagebox
-from tkinter.scrolledtext import ScrolledText
 from typing import Any
 
-from aiworkmonitor.agent import DesktopAgent
 from aiworkmonitor.config import AgentSettings
 from aiworkmonitor.windows_agent import check_payload
 from aiworkmonitor.windows_runtime import (
+    CONFIG_FILENAME,
+    DEFAULT_RELAY_PORT,
     EXECUTABLE_NAME,
+    automatic_device_identity,
+    background_instance_running,
     default_install_directory,
+    ensure_agent_config,
     get_startup_command,
     install_application,
+    launch_background,
+    mobile_websocket_url,
     read_config_values,
     set_startup,
+    startup_executable,
+    stop_background_instances,
     write_agent_config,
 )
 
@@ -38,6 +44,7 @@ MUTED = "#A8B0BE"
 PRIMARY = "#70D7A7"
 PRIMARY_DARK = "#174C38"
 BORDER = "#333B49"
+WARNING = "#FFD29A"
 
 
 def _enable_dpi_awareness() -> None:
@@ -61,75 +68,74 @@ def _as_bool(value: str | None, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-class QueueLogHandler(logging.Handler):
-    def __init__(self, events: queue.Queue[tuple[str, Any]]) -> None:
-        super().__init__()
-        self.events = events
-
-    def emit(self, record: logging.LogRecord) -> None:
-        message = self.format(record)
-        self.events.put(("log", message))
-        raw = record.getMessage()
-        if "Connected to relay" in raw:
-            self.events.put(("state", "已连接"))
-        elif "Relay connection failed" in raw:
-            self.events.put(("state", "连接失败，正在重试"))
-
-
 class WindowsAgentApp:
-    def __init__(self, root: tk.Tk, config_path: Path) -> None:
+    def __init__(self, root: tk.Tk, proposed_config_path: Path) -> None:
         self.root = root
-        self.config_path = config_path
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
-        self.stop_event = threading.Event()
-        self.agent_thread: threading.Thread | None = None
+        self.health_check_pending = False
+        self.advanced_window: tk.Toplevel | None = None
+        self.source_executable = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None
+        self.installed_executable: Path | None = None
+        self.config_path = proposed_config_path
         self.loaded_values: dict[str, str] = {}
 
         self.root.title("AI Work Monitor")
         self.root.configure(bg=BACKGROUND)
-        self.root.geometry("1040x760")
-        self.root.minsize(900, 680)
+        self.root.geometry("900x690")
+        self.root.minsize(780, 620)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         with suppress(Exception):
             self.root.iconbitmap(default=str(_resource_path("assets/app_icon.ico")))
 
-        self._load_variables()
+        self._resolve_installation()
+        self._load_identity()
         self._build_ui()
-        self._configure_logging()
+        self._ensure_background_running()
         self.root.after(100, self._poll_events)
+        self.root.after(350, self._request_health_check)
 
-    def _load_variables(self) -> None:
-        error: str | None = None
+    def _resolve_installation(self) -> None:
+        registered = startup_executable(get_startup_command())
+        if registered and registered.is_file():
+            self.installed_executable = registered
+            self.config_path = registered.parent / CONFIG_FILENAME
+            return
+        if self.source_executable and self.config_path.is_file():
+            self.installed_executable = self.source_executable
+
+    def _load_identity(self) -> None:
+        self.config_error: str | None = None
         try:
-            self.loaded_values = read_config_values(self.config_path)
+            self.loaded_values = ensure_agent_config(self.config_path)
         except (OSError, ValueError) as exc:
-            error = str(exc)
-            self.loaded_values = {}
+            self.config_error = str(exc)
+            device_id, device_name = automatic_device_identity()
+            self.loaded_values = {
+                "AIWM_TOKEN": "",
+                "AIWM_PORT": str(DEFAULT_RELAY_PORT),
+                "AIWM_RELAY_URL": f"ws://127.0.0.1:{DEFAULT_RELAY_PORT}",
+                "AIWM_DEVICE_ID": device_id,
+                "AIWM_DEVICE_NAME": device_name,
+                "AIWM_SAMPLE_INTERVAL": "2",
+                "AIWM_ALLOW_CLAUDE_COMMANDS": "true",
+            }
 
-        defaults = AgentSettings.from_env()
-        values = self.loaded_values
-        saved_startup = get_startup_command()
-        install_path = default_install_directory()
-        if saved_startup and saved_startup.startswith('"'):
-            candidate = Path(saved_startup.split('"', 2)[1])
-            if candidate.name.lower() == EXECUTABLE_NAME.lower():
-                install_path = candidate.parent
-
-        self.relay_var = tk.StringVar(value=values.get("AIWM_RELAY_URL", defaults.relay_url))
-        saved_token = values.get("AIWM_TOKEN", defaults.token)
-        self.token_var = tk.StringVar(value="" if saved_token == "development-token" else saved_token)
-        self.device_id = values.get("AIWM_DEVICE_ID", defaults.device_id)
-        self.device_name_var = tk.StringVar(value=values.get("AIWM_DEVICE_NAME", socket.gethostname()))
-        self.interval_var = tk.StringVar(value=values.get("AIWM_SAMPLE_INTERVAL", "2"))
-        self.workdir_var = tk.StringVar(value=values.get("AIWM_CLAUDE_WORKDIR", str(defaults.claude_workdir)))
-        self.allow_commands_var = tk.BooleanVar(value=_as_bool(values.get("AIWM_ALLOW_CLAUDE_COMMANDS")))
-        self.install_dir_var = tk.StringVar(value=str(install_path))
-        self.startup_var = tk.BooleanVar(value=saved_startup is not None)
-        self.status_var = tk.StringVar(value="未运行")
-        self.config_error = error
+        self.port = int(self.loaded_values.get("AIWM_PORT", str(DEFAULT_RELAY_PORT)))
+        self.device_name_var = tk.StringVar(value=socket.gethostname())
+        self.mobile_url_var = tk.StringVar(value=mobile_websocket_url(self.port))
+        self.token_var = tk.StringVar(value=self.loaded_values.get("AIWM_TOKEN", ""))
+        self.status_var = tk.StringVar(value="正在启动后台服务" if self.installed_executable else "等待安装")
+        self.status_detail_var = tk.StringVar(value="程序关闭后，监控仍会在后台运行。")
+        self.install_dir_var = tk.StringVar(
+            value=str(self.installed_executable.parent if self.installed_executable else default_install_directory())
+        )
+        self.interval_var = tk.StringVar(value=self.loaded_values.get("AIWM_SAMPLE_INTERVAL", "2"))
+        self.allow_commands_var = tk.BooleanVar(
+            value=_as_bool(self.loaded_values.get("AIWM_ALLOW_CLAUDE_COMMANDS"), default=True)
+        )
 
     def _build_ui(self) -> None:
-        header = tk.Frame(self.root, bg=BACKGROUND, padx=28, pady=20)
+        header = tk.Frame(self.root, bg=BACKGROUND, padx=30, pady=22)
         header.pack(fill="x")
         title_box = tk.Frame(header, bg=BACKGROUND)
         title_box.pack(side="left")
@@ -142,7 +148,7 @@ class WindowsAgentApp:
         ).pack(anchor="w")
         tk.Label(
             title_box,
-            text="Windows 代理控制台 · 实时监控 Claude Code 与 ChatGPT",
+            text="此电脑已自动配置；请按下方内容连接手机",
             bg=BACKGROUND,
             fg=MUTED,
             font=("Microsoft YaHei UI", 10),
@@ -158,111 +164,57 @@ class WindowsAgentApp:
         )
         self.status_label.pack(side="right")
 
-        content = tk.Frame(self.root, bg=BACKGROUND, padx=24)
-        content.pack(fill="both", expand=True)
-        content.grid_columnconfigure(0, weight=3, uniform="panels")
-        content.grid_columnconfigure(1, weight=2, uniform="panels")
-        content.grid_rowconfigure(1, weight=1)
+        self.content = tk.Frame(self.root, bg=BACKGROUND, padx=28)
+        self.content.pack(fill="both", expand=True)
 
-        settings = self._panel(content, "连接设置")
-        settings.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
-        settings.grid_columnconfigure(1, weight=1)
-        self._field(settings, 0, "中继 WebSocket 地址", self.relay_var)
-        self._field(settings, 1, "访问令牌", self.token_var, show="●")
-        self._field(settings, 2, "设备名称", self.device_name_var)
-        self._field(settings, 3, "采样间隔（秒）", self.interval_var)
-        self._path_field(settings, 4, "Claude 工作目录", self.workdir_var, self._browse_workdir)
-        tk.Checkbutton(
-            settings,
-            text="允许手机向 Claude Code 发送指令",
-            variable=self.allow_commands_var,
-            bg=PANEL,
-            fg=TEXT,
-            activebackground=PANEL,
-            activeforeground=TEXT,
-            selectcolor=FIELD,
-            font=("Microsoft YaHei UI", 10),
-        ).grid(row=5, column=0, columnspan=3, sticky="w", padx=18, pady=(8, 12))
-        settings_actions = tk.Frame(settings, bg=PANEL)
-        settings_actions.grid(row=6, column=0, columnspan=3, sticky="ew", padx=18, pady=(0, 18))
-        self._button(settings_actions, "保存配置", self._save_config).pack(side="left")
-        self._button(settings_actions, "检测本机", self._check_local, secondary=True).pack(side="left", padx=8)
-
-        right = tk.Frame(content, bg=BACKGROUND)
-        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
-        right.grid_columnconfigure(0, weight=1)
-
-        runtime = self._panel(right, "代理运行")
-        runtime.pack(fill="x", pady=(0, 12))
+        phone = self._panel(self.content, "在 Android 手机端这样填写")
+        phone.pack(fill="x", pady=(0, 14))
         tk.Label(
-            runtime,
-            text="启动后会持续上传电脑硬件遥测与 AI 应用状态。",
+            phone,
+            text="先确认手机和电脑登录同一个 Tailscale 账户，然后在 APK 的连接页面逐项填写：",
             bg=PANEL,
             fg=MUTED,
             justify="left",
-            wraplength=330,
             font=("Microsoft YaHei UI", 10),
-        ).pack(anchor="w", padx=18, pady=(4, 14))
-        runtime_actions = tk.Frame(runtime, bg=PANEL)
-        runtime_actions.pack(fill="x", padx=18, pady=(0, 18))
-        self.start_button = self._button(runtime_actions, "启动 Agent", self._start_agent)
-        self.start_button.pack(side="left")
-        self.stop_button = self._button(runtime_actions, "停止", self._stop_agent, secondary=True)
-        self.stop_button.pack(side="left", padx=8)
-        self.stop_button.configure(state="disabled")
+        ).pack(anchor="w", padx=20, pady=(6, 14))
 
-        install = self._panel(right, "安装与开机启动")
-        install.pack(fill="both", expand=True)
+        self._value_row(phone, "设备名称", self.device_name_var, self._copy_device_name)
+        self._value_row(phone, "中继 WebSocket 地址", self.mobile_url_var, self._copy_mobile_url)
+        self.token_entry = self._value_row(phone, "访问令牌", self.token_var, self._copy_token, secret=True)
+
+        actions = tk.Frame(phone, bg=PANEL)
+        actions.pack(fill="x", padx=20, pady=(10, 16))
+        self._button(actions, "复制全部连接信息", self._copy_all).pack(side="left")
+        self._button(actions, "显示 / 隐藏令牌", self._toggle_token, secondary=True).pack(side="left", padx=8)
+        self._button(actions, "刷新地址", self._refresh_mobile_url, secondary=True).pack(side="left")
+
+        service = self._panel(self.content, "后台运行状态")
+        service.pack(fill="x", pady=(0, 14))
         tk.Label(
-            install,
-            text="选择安装目录。安装后可用当前 Windows 账户静默开机启动，无需管理员权限。",
+            service,
+            textvariable=self.status_detail_var,
             bg=PANEL,
             fg=MUTED,
             justify="left",
-            wraplength=330,
+            wraplength=790,
             font=("Microsoft YaHei UI", 10),
-        ).pack(anchor="w", padx=18, pady=(4, 12))
-        install_row = tk.Frame(install, bg=PANEL)
-        install_row.pack(fill="x", padx=18)
-        self._entry(install_row, self.install_dir_var).pack(side="left", fill="x", expand=True)
-        self._button(install_row, "浏览", self._browse_install, secondary=True).pack(side="left", padx=(8, 0))
-        tk.Checkbutton(
-            install,
-            text="开机自动启动 Agent（后台运行）",
-            variable=self.startup_var,
-            bg=PANEL,
-            fg=TEXT,
-            activebackground=PANEL,
-            activeforeground=TEXT,
-            selectcolor=FIELD,
-            font=("Microsoft YaHei UI", 10),
-        ).pack(anchor="w", padx=18, pady=14)
-        install_actions = tk.Frame(install, bg=PANEL)
-        install_actions.pack(fill="x", padx=18, pady=(0, 18))
-        self._button(install_actions, "安装 / 更新", self._install).pack(side="left")
-        self._button(install_actions, "应用启动设置", self._apply_startup, secondary=True).pack(side="left", padx=8)
+        ).pack(anchor="w", padx=20, pady=(6, 10))
+        service_actions = tk.Frame(service, bg=PANEL)
+        service_actions.pack(fill="x", padx=20, pady=(0, 16))
+        if not self.installed_executable:
+            self.install_button = self._button(
+                service_actions,
+                "安装并开始永久后台运行",
+                self._install,
+            )
+            self.install_button.pack(side="left", padx=(0, 8))
+        self._button(service_actions, "检查后台服务", self._request_health_check, secondary=True).pack(side="left")
+        self._button(service_actions, "高级设置", self._toggle_advanced, secondary=True).pack(side="left", padx=8)
 
-        logs = self._panel(content, "运行日志")
-        logs.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 20))
-        logs.grid_rowconfigure(0, weight=1)
-        logs.grid_columnconfigure(0, weight=1)
-        self.log_text = ScrolledText(
-            logs,
-            bg="#0C0F15",
-            fg="#CBD3DF",
-            insertbackground=TEXT,
-            relief="flat",
-            borderwidth=0,
-            font=("Cascadia Mono", 9),
-            padx=12,
-            pady=10,
-            height=10,
-            state="disabled",
-        )
-        self.log_text.grid(row=0, column=0, sticky="nsew", padx=14, pady=(4, 14))
-
-        if self.config_error:
-            self._append_log(f"配置读取失败：{self.config_error}")
+        if not self.installed_executable:
+            self.status_detail_var.set("首次使用请点击“安装并开始永久后台运行”。令牌已自动生成，安装后不会改变。")
+        elif self.config_error:
+            self.status_detail_var.set(f"配置读取失败：{self.config_error}")
 
     def _panel(self, parent: tk.Misc, title: str) -> tk.LabelFrame:
         return tk.LabelFrame(
@@ -287,6 +239,7 @@ class WindowsAgentApp:
             fg=TEXT,
             insertbackground=TEXT,
             selectbackground=PRIMARY_DARK,
+            readonlybackground=FIELD,
             relief="flat",
             highlightthickness=1,
             highlightbackground=BORDER,
@@ -294,37 +247,41 @@ class WindowsAgentApp:
             font=("Microsoft YaHei UI", 10),
         )
 
-    def _field(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, *, show: str | None = None) -> None:
-        tk.Label(parent, text=label, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(
-            row=row,
-            column=0,
-            sticky="w",
-            padx=(18, 12),
-            pady=7,
+    def _value_row(
+        self,
+        parent: tk.Misc,
+        label: str,
+        variable: tk.StringVar,
+        copy_command: Any,
+        *,
+        secret: bool = False,
+    ) -> tk.Entry:
+        row = tk.Frame(parent, bg=PANEL)
+        row.pack(fill="x", padx=20, pady=5)
+        tk.Label(row, text=label, width=20, anchor="w", bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 9)).pack(
+            side="left"
         )
-        entry = self._entry(parent, variable, show=show)
-        entry.grid(row=row, column=1, sticky="ew", pady=7, ipady=7)
-        if show:
-            self._button(
-                parent,
-                "显示",
-                lambda: entry.configure(show="" if entry.cget("show") else show),
-                secondary=True,
-                compact=True,
-            ).grid(row=row, column=2, padx=(8, 18), pady=7)
-        else:
-            tk.Frame(parent, width=18, bg=PANEL).grid(row=row, column=2)
+        entry = self._entry(row, variable, show="●" if secret else None)
+        entry.configure(state="readonly")
+        entry.pack(side="left", fill="x", expand=True, ipady=7)
+        self._button(row, "复制", copy_command, secondary=True, compact=True).pack(side="left", padx=(8, 0))
+        return entry
+
+    def _field(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar) -> None:
+        tk.Label(parent, text=label, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(
+            row=row, column=0, sticky="w", padx=(18, 12), pady=7
+        )
+        self._entry(parent, variable).grid(row=row, column=1, sticky="ew", pady=7, ipady=7)
+        tk.Frame(parent, width=18, bg=PANEL).grid(row=row, column=2)
 
     def _path_field(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, command: Any) -> None:
         tk.Label(parent, text=label, bg=PANEL, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(
-            row=row,
-            column=0,
-            sticky="w",
-            padx=(18, 12),
-            pady=7,
+            row=row, column=0, sticky="w", padx=(18, 12), pady=7
         )
         self._entry(parent, variable).grid(row=row, column=1, sticky="ew", pady=7, ipady=7)
-        self._button(parent, "浏览", command, secondary=True, compact=True).grid(row=row, column=2, padx=(8, 18), pady=7)
+        self._button(parent, "浏览", command, secondary=True, compact=True).grid(
+            row=row, column=2, padx=(8, 18), pady=7
+        )
 
     def _button(
         self,
@@ -345,7 +302,6 @@ class WindowsAgentApp:
             fg=foreground,
             activebackground=BORDER if secondary else "#8BE8BD",
             activeforeground=foreground,
-            disabledforeground=MUTED,
             relief="flat",
             bd=0,
             padx=10 if compact else 16,
@@ -354,108 +310,139 @@ class WindowsAgentApp:
             font=("Microsoft YaHei UI", 9, "bold"),
         )
 
-    def _configure_logging(self) -> None:
-        handler = QueueLogHandler(self.events)
-        handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)s  %(message)s", "%H:%M:%S"))
-        root_logger = logging.getLogger()
-        root_logger.setLevel(logging.INFO)
-        root_logger.addHandler(handler)
-        self.log_handler = handler
-
     def _config_values(self) -> dict[str, str | bool | float]:
         interval = max(float(self.interval_var.get().strip()), 0.5)
+        device_id, device_name = automatic_device_identity()
         return {
-            "AIWM_TOKEN": self.token_var.get().strip(),
-            "AIWM_RELAY_URL": self.relay_var.get().strip().rstrip("/"),
-            "AIWM_DEVICE_ID": self.device_id,
-            "AIWM_DEVICE_NAME": self.device_name_var.get().strip(),
+            **self.loaded_values,
+            "AIWM_TOKEN": self.loaded_values.get("AIWM_TOKEN", self.token_var.get()),
+            "AIWM_RELAY_URL": f"ws://127.0.0.1:{self.port}",
+            "AIWM_PORT": self.port,
+            "AIWM_DEVICE_ID": device_id,
+            "AIWM_DEVICE_NAME": device_name,
             "AIWM_SAMPLE_INTERVAL": interval,
             "AIWM_ALLOW_CLAUDE_COMMANDS": self.allow_commands_var.get(),
-            "AIWM_CLAUDE_WORKDIR": str(Path(self.workdir_var.get().strip()).expanduser().resolve()),
-            **{
-                key: value
-                for key, value in self.loaded_values.items()
-                if key in {"AIWM_CLAUDE_LOG_GLOB", "AIWM_CHATGPT_LOG_GLOB"} and value
-            },
         }
 
     def _settings(self) -> AgentSettings:
         values = self._config_values()
-        relay = str(values["AIWM_RELAY_URL"])
         token = str(values["AIWM_TOKEN"])
-        name = str(values["AIWM_DEVICE_NAME"])
-        if not relay.startswith(("ws://", "wss://")):
-            raise ValueError("中继地址必须以 ws:// 或 wss:// 开头")
         if not token:
-            raise ValueError("访问令牌不能为空")
-        if not name:
-            raise ValueError("设备名称不能为空")
+            raise ValueError("本机令牌尚未生成")
         return AgentSettings(
             token=token,
-            relay_url=relay,
-            device_id=self.device_id,
-            device_name=name,
+            relay_url=str(values["AIWM_RELAY_URL"]),
+            device_id=str(values["AIWM_DEVICE_ID"]),
+            device_name=str(values["AIWM_DEVICE_NAME"]),
             sample_interval=float(values["AIWM_SAMPLE_INTERVAL"]),
             allow_claude_commands=bool(values["AIWM_ALLOW_CLAUDE_COMMANDS"]),
-            claude_workdir=Path(str(values["AIWM_CLAUDE_WORKDIR"])),
             claude_log_glob=self.loaded_values.get("AIWM_CLAUDE_LOG_GLOB"),
             chatgpt_log_glob=self.loaded_values.get("AIWM_CHATGPT_LOG_GLOB"),
         )
 
-    def _save_config(self, *, notify: bool = True) -> bool:
+    def _save_advanced(self, *, notify: bool = True) -> bool:
         try:
             self._settings()
             write_agent_config(self.config_path, self._config_values())
-            self.loaded_values = read_config_values(self.config_path)
-            self._append_log(f"配置已保存：{self.config_path}")
+            self.loaded_values = read_config_values(self.config_path, required=True)
+            if self.installed_executable:
+                set_startup(True, self.installed_executable)
+                stop_background_instances(self.installed_executable)
+                launch_background(self.installed_executable)
             if notify:
-                messagebox.showinfo("保存成功", "配置已保存，访问令牌已使用 Windows DPAPI 保护。")
+                messagebox.showinfo("设置已保存", "后台服务已自动重启。设备名称和本机令牌保持不变。")
             return True
         except (OSError, ValueError) as exc:
-            messagebox.showerror("无法保存配置", str(exc))
+            messagebox.showerror("无法保存设置", str(exc))
             return False
 
-    def _start_agent(self) -> None:
-        if self.agent_thread and self.agent_thread.is_alive():
+    def _install(self) -> None:
+        if not self.source_executable:
+            messagebox.showwarning("仅打包版可安装", "请构建并运行 AIWorkMonitorAgent.exe。")
             return
         try:
-            settings = self._settings()
-        except ValueError as exc:
-            messagebox.showerror("配置不完整", str(exc))
+            requested_destination = Path(self.install_dir_var.get()).expanduser().resolve() / EXECUTABLE_NAME
+            if self.installed_executable and self.installed_executable.resolve() != requested_destination:
+                stop_background_instances(self.installed_executable)
+            destination = install_application(
+                self.source_executable,
+                Path(self.install_dir_var.get()),
+                self._config_values(),
+                start_with_windows=True,
+            )
+            self.installed_executable = destination
+            self.config_path = destination.parent / CONFIG_FILENAME
+            self.loaded_values = ensure_agent_config(self.config_path)
+            self.token_var.set(self.loaded_values["AIWM_TOKEN"])
+            self.install_dir_var.set(str(destination.parent))
+            launch_background(destination)
+            self.status_var.set("正在启动后台服务")
+            self.status_detail_var.set("安装完成。以后开机自动运行；关闭此窗口不会停止监控。")
+            self.root.after(800, self._request_health_check)
+            messagebox.showinfo(
+                "安装完成",
+                f"已安装到：\n{destination}\n\n后台服务已启动，并已设置为开机自动运行。\n本机令牌今后保持不变。",
+            )
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("安装失败", str(exc))
+
+    def _ensure_background_running(self) -> None:
+        if not self.installed_executable:
             return
-        if not self._save_config(notify=False):
-            return
-
-        self.stop_event.clear()
-        self.agent_thread = threading.Thread(target=self._agent_worker, args=(settings,), daemon=True)
-        self.agent_thread.start()
-        self.status_var.set("正在连接")
-        self.status_label.configure(bg="#314154", fg=TEXT)
-        self.start_button.configure(state="disabled")
-        self.stop_button.configure(state="normal")
-        self._append_log("Agent 已启动")
-
-    def _agent_worker(self, settings: AgentSettings) -> None:
-        async def run() -> None:
-            task = asyncio.create_task(DesktopAgent(settings).run_forever())
-            while not self.stop_event.is_set():
-                await asyncio.sleep(0.2)
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-
         try:
-            asyncio.run(run())
-        except Exception as exc:
-            self.events.put(("log", f"Agent 异常退出：{exc}"))
-        finally:
-            self.events.put(("stopped", None))
+            set_startup(True, self.installed_executable)
+            if not background_instance_running(self.installed_executable):
+                launch_background(self.installed_executable)
+        except OSError as exc:
+            self.status_var.set("后台启动失败")
+            self.status_detail_var.set(str(exc))
 
-    def _stop_agent(self) -> None:
-        if self.agent_thread and self.agent_thread.is_alive():
-            self.stop_event.set()
-            self.status_var.set("正在停止")
-            self.stop_button.configure(state="disabled")
+    def _request_health_check(self) -> None:
+        if self.health_check_pending:
+            return
+        self.health_check_pending = True
+
+        def worker() -> None:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=1.5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                self.events.put(("health", payload))
+            except Exception as exc:
+                self.events.put(("health_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _poll_events(self) -> None:
+        while True:
+            try:
+                kind, payload = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "health":
+                self.health_check_pending = False
+                self.status_var.set("后台服务运行中")
+                self.status_label.configure(bg=PRIMARY_DARK, fg=PRIMARY)
+                device_count = payload.get("deviceCount", 0)
+                self.status_detail_var.set(
+                    f"后台中继与本机监控均已启动（当前设备数：{device_count}）。关闭此窗口不会停止运行。"
+                )
+            elif kind == "health_error":
+                self.health_check_pending = False
+                if self.installed_executable:
+                    self.status_var.set("后台服务正在恢复")
+                    self.status_label.configure(bg="#4A3725", fg=WARNING)
+                    self.status_detail_var.set("后台服务尚未就绪，程序会自动持续重试。可稍后点击“检查后台服务”。")
+                else:
+                    self.status_var.set("等待安装")
+            elif kind == "check":
+                telemetry = payload.get("telemetry", {})
+                cpu = telemetry.get("cpu", {}).get("usagePercent", "--")
+                memory = telemetry.get("memory", {}).get("usagePercent", "--")
+                gpu_count = len(telemetry.get("gpus", []))
+                messagebox.showinfo("本机检测完成", f"CPU：{cpu}%\n内存：{memory}%\nGPU：{gpu_count} 个")
+            elif kind == "error":
+                messagebox.showerror("操作失败", str(payload))
+        self.root.after(100, self._poll_events)
 
     def _check_local(self) -> None:
         try:
@@ -471,94 +458,83 @@ class WindowsAgentApp:
                 self.events.put(("error", f"本机检测失败：{exc}"))
 
         threading.Thread(target=worker, daemon=True).start()
-        self._append_log("正在采集本机硬件与应用状态…")
 
-    def _install(self) -> None:
-        if not getattr(sys, "frozen", False):
-            messagebox.showwarning("仅打包版可安装", "请先构建并运行 AIWorkMonitorAgent.exe。")
+    def _toggle_advanced(self) -> None:
+        if self.advanced_window and self.advanced_window.winfo_exists():
+            self.advanced_window.lift()
+            self.advanced_window.focus_force()
             return
-        try:
-            self._settings()
-            destination = install_application(
-                Path(sys.executable),
-                Path(self.install_dir_var.get()),
-                self._config_values(),
-                start_with_windows=self.startup_var.get(),
-            )
-            self._append_log(f"应用已安装：{destination}")
-            messagebox.showinfo(
-                "安装完成",
-                f"已安装到：\n{destination}\n\n开机启动：{'已启用' if self.startup_var.get() else '未启用'}",
-            )
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("安装失败", str(exc))
 
-    def _apply_startup(self) -> None:
-        target = Path(self.install_dir_var.get()).expanduser().resolve() / EXECUTABLE_NAME
-        if self.startup_var.get() and not target.is_file():
-            messagebox.showwarning("尚未安装", "目标目录中没有 EXE，请先点击“安装 / 更新”。")
-            return
-        try:
-            set_startup(self.startup_var.get(), target)
-            state = "已启用" if self.startup_var.get() else "已关闭"
-            self._append_log(f"开机启动{state}")
-            messagebox.showinfo("启动设置", f"开机自动启动已{state}。")
-        except OSError as exc:
-            messagebox.showerror("设置失败", str(exc))
+        window = tk.Toplevel(self.root)
+        self.advanced_window = window
+        window.title("AI Work Monitor · 高级设置")
+        window.configure(bg=BACKGROUND)
+        window.geometry("800x380")
+        window.minsize(720, 350)
+        window.transient(self.root)
+        with suppress(Exception):
+            window.iconbitmap(default=str(_resource_path("assets/app_icon.ico")))
 
-    def _browse_workdir(self) -> None:
-        selected = filedialog.askdirectory(initialdir=self.workdir_var.get() or str(Path.home()))
-        if selected:
-            self.workdir_var.set(selected)
+        advanced = self._panel(window, "高级设置（通常无需修改）")
+        advanced.pack(fill="both", expand=True, padx=22, pady=22)
+        advanced.grid_columnconfigure(1, weight=1)
+        self._path_field(advanced, 0, "安装位置", self.install_dir_var, self._browse_install)
+        self._field(advanced, 1, "采样间隔（秒）", self.interval_var)
+        tk.Checkbutton(
+            advanced,
+            text="允许手机向 Claude Code 发送指令",
+            variable=self.allow_commands_var,
+            bg=PANEL,
+            fg=TEXT,
+            activebackground=PANEL,
+            activeforeground=TEXT,
+            selectcolor=FIELD,
+            font=("Microsoft YaHei UI", 10),
+        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=18, pady=(8, 12))
+        advanced_actions = tk.Frame(advanced, bg=PANEL)
+        advanced_actions.grid(row=3, column=0, columnspan=3, sticky="ew", padx=18, pady=(0, 18))
+        self._button(advanced_actions, "安装 / 更新并保持后台运行", self._install).pack(side="left")
+        self._button(advanced_actions, "保存高级设置", self._save_advanced, secondary=True).pack(side="left", padx=8)
+        self._button(advanced_actions, "检测本机硬件", self._check_local, secondary=True).pack(side="left")
+
+    def _refresh_mobile_url(self) -> None:
+        self.mobile_url_var.set(mobile_websocket_url(self.port))
+        self._request_health_check()
+
+    def _toggle_token(self) -> None:
+        self.token_entry.configure(state="normal")
+        self.token_entry.configure(show="" if self.token_entry.cget("show") else "●")
+        self.token_entry.configure(state="readonly")
+
+    def _copy(self, value: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(value)
+        self.root.update_idletasks()
+
+    def _copy_device_name(self) -> None:
+        self._copy(self.device_name_var.get())
+
+    def _copy_mobile_url(self) -> None:
+        self._copy(self.mobile_url_var.get())
+
+    def _copy_token(self) -> None:
+        self._copy(self.token_var.get())
+
+    def _copy_all(self) -> None:
+        self._copy(
+            "设备名称：{name}\n中继 WebSocket 地址：{url}\n访问令牌：{token}".format(
+                name=self.device_name_var.get(),
+                url=self.mobile_url_var.get(),
+                token=self.token_var.get(),
+            )
+        )
 
     def _browse_install(self) -> None:
         selected = filedialog.askdirectory(initialdir=self.install_dir_var.get() or str(default_install_directory()))
         if selected:
             self.install_dir_var.set(selected)
 
-    def _poll_events(self) -> None:
-        while True:
-            try:
-                kind, payload = self.events.get_nowait()
-            except queue.Empty:
-                break
-            if kind == "log":
-                self._append_log(str(payload))
-            elif kind == "state":
-                self.status_var.set(str(payload))
-                if payload == "已连接":
-                    self.status_label.configure(bg=PRIMARY_DARK, fg=PRIMARY)
-                else:
-                    self.status_label.configure(bg="#4A3725", fg="#FFD29A")
-            elif kind == "stopped":
-                self.status_var.set("未运行")
-                self.status_label.configure(bg=FIELD, fg=MUTED)
-                self.start_button.configure(state="normal")
-                self.stop_button.configure(state="disabled")
-                self._append_log("Agent 已停止")
-            elif kind == "check":
-                self._append_log(json.dumps(payload, ensure_ascii=False, indent=2))
-                telemetry = payload.get("telemetry", {})
-                cpu = telemetry.get("cpu", {}).get("usagePercent", "--")
-                memory = telemetry.get("memory", {}).get("usagePercent", "--")
-                gpu_count = len(telemetry.get("gpus", []))
-                messagebox.showinfo("本机检测完成", f"CPU：{cpu}%\n内存：{memory}%\nGPU：{gpu_count} 个\n\n详细结果已写入运行日志。")
-            elif kind == "error":
-                self._append_log(str(payload))
-                messagebox.showerror("操作失败", str(payload))
-        self.root.after(100, self._poll_events)
-
-    def _append_log(self, message: str) -> None:
-        if not hasattr(self, "log_text"):
-            return
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", message.rstrip() + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
-
     def _close(self) -> None:
-        self.stop_event.set()
-        logging.getLogger().removeHandler(self.log_handler)
         self.root.destroy()
 
 

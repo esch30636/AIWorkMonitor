@@ -23,8 +23,8 @@
 
 - `hello`：设备名称、OS、架构和 capability。
 - `telemetry`：CPU、内存、GPU/显存指标。
-- `provider_state`：Claude Code、ChatGPT 是否运行及进程摘要。
-- `activity`：适配器发现的新增活动。
+- `provider_state`：Claude Code、ChatGPT 是否运行及进程摘要。Claude Code 的 `activeSession` 包含自动发现的 `sessionId`、`projectName`、`projectPath`、`lastActivityAt` 和 `active`。
+- `activity`：适配器发现的新增活动；Claude Code 活动会附带对应的项目名、项目路径和 session ID。
 - `command_result`：Claude 指令最终结果。
 
 ## 手机下行消息
@@ -41,5 +41,4 @@
 }
 ```
 
-中继只把 `target=claude-code` 的合法消息转发给在线目标设备。电脑代理还会独立检查 `AIWM_ALLOW_CLAUDE_COMMANDS`。
-
+中继只把 `target=claude-code` 的合法消息转发给在线目标设备。电脑代理还会独立检查 `AIWM_ALLOW_CLAUDE_COMMANDS`，并自动在最近活跃项目目录中恢复对应的 Claude session；手机和电脑端都不需要填写工作路径。

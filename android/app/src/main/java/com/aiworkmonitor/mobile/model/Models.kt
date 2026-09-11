@@ -27,12 +27,22 @@ data class ProviderState(
     val name: String,
     val running: Boolean,
     val mode: String? = null,
+    val activeSession: ClaudeSessionState? = null,
+)
+
+data class ClaudeSessionState(
+    val sessionId: String,
+    val projectName: String,
+    val projectPath: String,
+    val lastActivityAt: String,
+    val active: Boolean,
 )
 
 data class ActivityItem(
     val provider: String,
     val role: String?,
     val text: String,
+    val projectName: String? = null,
 )
 
 data class DeviceSnapshot(
@@ -89,7 +99,23 @@ fun parseSnapshot(message: String): List<DeviceSnapshot> {
                     while (keys.hasNext()) {
                         val key = keys.next()
                         val provider = providers.getJSONObject(key)
-                        add(ProviderState(key, provider.optBoolean("running"), provider.optString("mode").ifBlank { null }))
+                        val activeSession = provider.optJSONObject("activeSession")?.let { session ->
+                            ClaudeSessionState(
+                                sessionId = session.optString("sessionId"),
+                                projectName = session.optString("projectName"),
+                                projectPath = session.optString("projectPath"),
+                                lastActivityAt = session.optString("lastActivityAt"),
+                                active = session.optBoolean("active"),
+                            )
+                        }
+                        add(
+                            ProviderState(
+                                name = key,
+                                running = provider.optBoolean("running"),
+                                mode = provider.optString("mode").ifBlank { null },
+                                activeSession = activeSession,
+                            ),
+                        )
                     }
                 }
             }
@@ -105,6 +131,7 @@ fun parseSnapshot(message: String): List<DeviceSnapshot> {
                                 provider = event.optString("provider", "unknown"),
                                 role = event.optString("role").ifBlank { null },
                                 text = event.optString("text"),
+                                projectName = event.optString("projectName").ifBlank { null },
                             ),
                         )
                     }
@@ -143,4 +170,3 @@ fun parseSnapshot(message: String): List<DeviceSnapshot> {
         }
     }
 }
-
